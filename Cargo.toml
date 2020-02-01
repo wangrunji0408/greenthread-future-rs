@@ -1,0 +1,13 @@
+[package]
+name = "core-thread-future"
+version = "0.1.0"
+authors = ["Runji Wang <wangrunji0408@163.com>"]
+edition = "2018"
+description = "Convert blocking functions to thread future on bare-metal (no_std)."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "0.2", features = ["macros", "rt-threaded"] }

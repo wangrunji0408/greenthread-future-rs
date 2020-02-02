@@ -15,13 +15,13 @@ Now just take a unit test as an example:
 ```rust
 #[tokio::test]
 async fn test() {
-  let h1 = tokio::spawn(ThreadFuture::new(|| {
+  let h1 = tokio::spawn(ThreadFuture::from(|| {
     println!("1.1");
     yield_now();
     println!("1.2");
     1u32
   }));
-  let h2 = tokio::spawn(ThreadFuture::new(|| {
+  let h2 = tokio::spawn(ThreadFuture::from(|| {
     println!("2.1");
     yield_now();
     println!("2.2");

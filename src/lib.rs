@@ -117,7 +117,7 @@ impl ThreadContext {
     }
 }
 
-impl<F, T> ThreadFuture<F, T>
+impl<F, T> From<F> for ThreadFuture<F, T>
 where
     F: Send + 'static + Unpin + FnOnce() -> T,
     T: Send + 'static + Unpin,
@@ -126,7 +126,7 @@ where
     ///
     /// # Example
     /// TODO
-    pub fn new(f: F) -> Self {
+    fn from(f: F) -> Self {
         assert_eq!(core::mem::size_of::<Self>(), RAW_SIZE, "TCB size exceed");
         ThreadFuture {
             tcb: ManuallyDrop::new(TCB {
@@ -218,13 +218,13 @@ mod tests {
 
     #[tokio::test]
     async fn test() {
-        let h1 = tokio::spawn(ThreadFuture::new(|| {
+        let h1 = tokio::spawn(ThreadFuture::from(|| {
             println!("1.1");
             yield_now();
             println!("1.2");
             1u32
         }));
-        let h2 = tokio::spawn(ThreadFuture::new(|| {
+        let h2 = tokio::spawn(ThreadFuture::from(|| {
             println!("2.1");
             yield_now();
             println!("2.2");

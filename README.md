@@ -46,5 +46,6 @@ join 1 => 1
 join 2 => 2
 ```
 
+## Internal
 
-
+![stack-layout](docs/stack-layout.svg)

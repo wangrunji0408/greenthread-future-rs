@@ -1,4 +1,4 @@
-# core-thread-future
+# greenthread-future-rs
 
 Convert sync functions into non-blocking thread futures **on bare-metal (no_std)**.
 

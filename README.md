@@ -3,7 +3,7 @@
 [![Actions Status](https://github.com/wangrunji0408/greenthread-future-rs/workflows/CI/badge.svg)](https://github.com/wangrunji0408/greenthread-future-rs/actions)
 [![Coverage Status](https://coveralls.io/repos/github/wangrunji0408/greenthread-future-rs/badge.svg?branch=master)](https://coveralls.io/github/wangrunji0408/greenthread-future-rs?branch=master)
 
-Convert sync functions into non-blocking thread futures **on bare-metal (no_std)**.
+Convert closures into futures based on greenthread **on bare-metal (no_std + no_alloc)**.
 
 In a word, this is a `#![no_std]` version of [Futurify](https://github.com/robertohuertasm/futurify).
 

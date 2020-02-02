@@ -1,12 +1,10 @@
-//! Convert blocking functions to thread future on bare-metal (no_std).
+//! Convert closures to futures based on greenthread on bare-metal (no_std + no_alloc).
 
 #![cfg_attr(not(test), no_std)]
 #![feature(asm)]
 #![feature(naked_functions)]
 #![feature(untagged_unions)]
 #![deny(warnings)]
-
-extern crate alloc;
 
 use core::future::Future;
 use core::mem::ManuallyDrop;

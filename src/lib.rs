@@ -3,22 +3,21 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(asm)]
 #![feature(naked_functions)]
+#![feature(untagged_unions)]
 #![deny(warnings)]
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use core::future::Future;
+use core::mem::ManuallyDrop;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
 /// Future that wraps a blocking thread.
-pub struct ThreadFuture<F, T>
-where
-    F: Send + 'static + FnOnce() -> T,
-    T: Send + 'static,
-{
-    inner: Box<TCB<F, T>>,
+#[repr(C, align(0x2000))]
+pub union ThreadFuture<F, T> {
+    tcb: ManuallyDrop<TCB<F, T>>,
+    stack: [usize; RAW_SIZE / 8],
 }
 
 /// Thread Control Block (TCB)
@@ -26,7 +25,6 @@ where
 /// This struct is allocated on heap whose start address is aligned to 0x2000.
 /// So that we can quickly locate it from stack pointer (just like Linux).
 #[repr(C)]
-#[repr(align(0x4000))]
 struct TCB<F, T> {
     /// Pointer to the executor context.
     ///
@@ -42,22 +40,18 @@ struct TCB<F, T> {
 
     /// Thread state. Contains function object or return value.
     state: State<F, T>,
-
-    /// Stack of the thread.
-    stack: [u8; 0x3000],
 }
 
-// TODO: dynamic set stack size
-const TCB_SIZE: usize = 0x4000;
+const RAW_SIZE: usize = 0x2000;
 
 const CANARY: usize = 0xcafebabe_deadbeaf;
 
 impl<F, T> TCB<F, T> {
-    /// Get a mutable reference of current raw struct.
+    /// Get a mutable reference of current TCB.
     unsafe fn current() -> &'static mut Self {
         let mut rsp: usize;
         asm!("" : "={rsp}"(rsp));
-        rsp &= !(TCB_SIZE - 1);
+        rsp &= !(RAW_SIZE - 1);
         &mut *(rsp as *mut _)
     }
 }
@@ -125,70 +119,78 @@ impl ThreadContext {
 
 impl<F, T> ThreadFuture<F, T>
 where
-    F: Send + 'static + FnOnce() -> T,
-    T: Send + 'static,
+    F: Send + 'static + Unpin + FnOnce() -> T,
+    T: Send + 'static + Unpin,
 {
     /// Convert a closure of blocking thread to future.
     ///
     /// # Example
     /// TODO
     pub fn new(f: F) -> Self {
-        assert!(
-            core::mem::size_of::<TCB<F, T>>() <= TCB_SIZE,
-            "TCB size exceed"
-        );
-        let mut inner = Box::new(TCB {
-            executor_context_ptr: 0,
-            context: Default::default(),
-            state: State::Ready(f),
-            canary: CANARY,
-            stack: [0; 0x3000],
-        });
-        unsafe {
-            let rsp = (((&*inner as *const TCB<F, T>).add(1) as usize) & !0xf) - 8;
-            (rsp as *mut usize).write(entry::<F, T> as usize);
-            inner.context.rsp = rsp;
+        assert_eq!(core::mem::size_of::<Self>(), RAW_SIZE, "TCB size exceed");
+        ThreadFuture {
+            tcb: ManuallyDrop::new(TCB {
+                executor_context_ptr: 0,
+                context: Default::default(),
+                state: State::Ready(f),
+                canary: CANARY,
+            }),
         }
-        // define a static function as the entry of new thread
-        unsafe extern "sysv64" fn entry<F, T>()
-        where
-            F: Send + 'static + FnOnce() -> T,
-            T: Send + 'static,
-        {
-            let raw = TCB::<F, T>::current();
-            if let State::Ready(f) = core::mem::replace(&mut raw.state, State::Running) {
-                let ret = f();
-                raw.state = State::Exited(ret);
-            } else {
-                unreachable!()
-            }
-            yield_now();
-        }
-        ThreadFuture { inner }
     }
 }
 
 impl<F, T> Future for ThreadFuture<F, T>
 where
-    F: Send + 'static + FnOnce() -> T,
-    T: Send + 'static,
+    F: Send + 'static + Unpin + FnOnce() -> T,
+    T: Send + 'static + Unpin,
 {
     type Output = T;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // allocate executor context at stack
         let mut context = ThreadContext::default();
-        self.inner.executor_context_ptr = &mut context as *mut _ as usize;
-        unsafe {
-            context.switch(&mut self.inner.context);
-        }
-        if let Some(ret) = self.inner.state.take_ret() {
+        let raw = self.get_mut();
+        let state = unsafe {
+            // fill 'rsp' at first run
+            if let State::Ready(_) = &raw.tcb.state {
+                let rsp = &mut raw.stack[RAW_SIZE / 8 - 1];
+                *rsp = entry::<F, T> as usize;
+                raw.tcb.context.rsp = rsp as *mut _ as usize;
+            }
+            // fill pointer to my context so that the thread can switch back
+            raw.tcb.executor_context_ptr = &mut context as *mut _ as usize;
+            // switch to the thread
+            context.switch(&mut raw.tcb.context);
+            &mut raw.tcb.state
+        };
+        // check the thread state
+        if let Some(ret) = state.take_ret() {
+            // exited
             Poll::Ready(ret)
         } else {
             // yield_now
+            // wake up myself, otherwise the executor won't poll me again
             cx.waker().wake_by_ref();
             Poll::Pending
         }
     }
+}
+
+/// A static function as the entry of new thread
+unsafe extern "sysv64" fn entry<F, T>()
+where
+    F: Send + 'static + FnOnce() -> T,
+    T: Send + 'static,
+{
+    let tcb = TCB::<F, T>::current();
+    if let State::Ready(f) = core::mem::replace(&mut tcb.state, State::Running) {
+        let ret = f();
+        tcb.state = State::Exited(ret);
+    } else {
+        unreachable!()
+    }
+    yield_now();
+    unreachable!();
 }
 
 /// Cooperatively gives up the CPU to the executor.
@@ -198,15 +200,15 @@ where
 pub fn yield_now() {
     unsafe {
         // type `F` and `T` do not matter
-        let current = TCB::<fn(), ()>::current();
+        let tcb = TCB::<fn(), ()>::current();
         // ensure we got a valid structure
         assert_eq!(
-            current.canary, CANARY,
+            tcb.canary, CANARY,
             "canary is changed. maybe stack overflow!"
         );
         // switch back to the executor thread
-        let executor_context = &mut *(current.executor_context_ptr as *mut _);
-        current.context.switch(executor_context);
+        let executor_context = &mut *(tcb.executor_context_ptr as *mut _);
+        tcb.context.switch(executor_context);
     }
 }
 

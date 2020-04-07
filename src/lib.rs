@@ -9,7 +9,7 @@
 use core::future::Future;
 use core::mem::ManuallyDrop;
 use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 
 /// Future that wraps a blocking thread.
 #[repr(C, align(0x2000))]
@@ -28,6 +28,9 @@ struct TCB<F, T> {
     ///
     /// Running thread call `switch` on this to switch back to executor.
     context_ptr: *mut ThreadContext,
+
+    /// The waker of task.
+    waker: Option<Waker>,
 
     /// A canary value to detect stack overflow.
     canary: usize,
@@ -48,7 +51,13 @@ impl<F, T> TCB<F, T> {
         let mut rsp: usize;
         asm!("" : "={rsp}"(rsp));
         rsp &= !(RAW_SIZE - 1);
-        &mut *(rsp as *mut _)
+        let tcb = &mut *(rsp as *mut Self);
+        // ensure we got a valid structure
+        assert_eq!(
+            tcb.canary, CANARY,
+            "canary is changed. maybe stack overflow!"
+        );
+        tcb
     }
 }
 
@@ -131,8 +140,9 @@ where
         ThreadFuture {
             tcb: ManuallyDrop::new(TCB {
                 context_ptr: core::ptr::null_mut(),
-                state: State::Ready(f),
+                waker: None,
                 canary: CANARY,
+                state: State::Ready(f),
             }),
         }
     }
@@ -154,6 +164,7 @@ where
                 let context = ((raw as *mut Self).add(1) as *mut ThreadContext).sub(1);
                 (*context).rip = entry::<F, T> as usize;
                 raw.tcb.context_ptr = context;
+                raw.tcb.waker = Some(cx.waker().clone());
             }
             // switch to the thread
             ThreadContext::switch(&mut raw.tcb.context_ptr);
@@ -164,9 +175,7 @@ where
             // exited
             Poll::Ready(ret)
         } else {
-            // yield_now
-            // wake up myself, otherwise the executor won't poll me again
-            cx.waker().wake_by_ref();
+            // yield_now or park
             Poll::Pending
         }
     }
@@ -197,19 +206,36 @@ pub fn yield_now() {
     unsafe {
         // type `F` and `T` do not matter
         let tcb = TCB::<fn(), ()>::current();
-        // ensure we got a valid structure
-        assert_eq!(
-            tcb.canary, CANARY,
-            "canary is changed. maybe stack overflow!"
-        );
+        // wake up myself, otherwise the executor won't poll me again
+        tcb.waker.as_ref().unwrap().wake_by_ref();
         // switch back to the executor thread
         ThreadContext::switch(&mut tcb.context_ptr);
+    }
+}
+
+/// Blocks unless or until the current thread's token is made available.
+pub fn park() {
+    unsafe {
+        // type `F` and `T` do not matter
+        let tcb = TCB::<fn(), ()>::current();
+        // switch back to the executor thread
+        ThreadContext::switch(&mut tcb.context_ptr);
+    }
+}
+
+/// Get waker of the current thread.
+pub fn current_waker() -> Waker {
+    unsafe {
+        // type `F` and `T` do not matter
+        let tcb = TCB::<fn(), ()>::current();
+        tcb.waker.as_ref().unwrap().clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test() {
@@ -225,7 +251,20 @@ mod tests {
             println!("2.2");
             2u32
         }));
-        println!("join 1 => {}", h1.await.unwrap());
-        println!("join 2 => {}", h2.await.unwrap());
+        assert_eq!(h1.await.unwrap(), 1);
+        assert_eq!(h2.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn sleep_and_wake() {
+        let h1 = tokio::spawn(ThreadFuture::from(|| {
+            let waker = current_waker();
+            tokio::spawn(async move {
+                tokio::time::delay_for(Duration::from_millis(10)).await;
+                waker.wake();
+            });
+            park();
+        }));
+        h1.await.unwrap();
     }
 }

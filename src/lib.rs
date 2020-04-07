@@ -49,6 +49,9 @@ unsafe impl<F, T> Send for TCB<F, T> {}
 
 const RAW_SIZE: usize = 0x2000;
 
+#[cfg(target_pointer_width = "32")]
+const CANARY: usize = 0xdeadbeaf;
+#[cfg(target_pointer_width = "64")]
 const CANARY: usize = 0xcafebabe_deadbeaf;
 
 impl<F, T> TCB<F, T> {

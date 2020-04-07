@@ -26,21 +26,29 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [
+          x86_64-unknown-linux-gnu,
+          riscv32imac-unknown-none-elf,
+          riscv64imac-unknown-none-elf,
+        ]
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: nightly
-    - name: Build
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --all-features
-    - name: Build docs
-      uses: actions-rs/cargo@v1
-      with:
-        command: doc
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          target: ${{ matrix.target }}
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --all-features --target ${{ matrix.target }}
+      - name: Docs
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --target ${{ matrix.target }}
 
   test:
     runs-on: ubuntu-latest

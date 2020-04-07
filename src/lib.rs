@@ -16,6 +16,8 @@ use core::task::{Context, Poll, Waker};
 include!("x86_64.rs");
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 include!("riscv.rs");
+#[cfg(target_arch = "aarch64")]
+include!("aarch64.rs");
 
 /// Future that wraps a blocking thread.
 #[repr(C, align(0x2000))]

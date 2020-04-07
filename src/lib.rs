@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![feature(asm)]
+#![feature(global_asm)]
 #![feature(naked_functions)]
 #![feature(untagged_unions)]
 #![deny(warnings)]
@@ -10,6 +11,11 @@ use core::future::Future;
 use core::mem::ManuallyDrop;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+
+#[cfg(target_arch = "x86_64")]
+include!("x86_64.rs");
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+include!("riscv.rs");
 
 /// Future that wraps a blocking thread.
 #[repr(C, align(0x2000))]
@@ -48,10 +54,8 @@ const CANARY: usize = 0xcafebabe_deadbeaf;
 impl<F, T> TCB<F, T> {
     /// Get a mutable reference of current TCB.
     unsafe fn current() -> &'static mut Self {
-        let mut rsp: usize;
-        asm!("" : "={rsp}"(rsp));
-        rsp &= !(RAW_SIZE - 1);
-        let tcb = &mut *(rsp as *mut Self);
+        let sp = stack_pointer() & !(RAW_SIZE - 1);
+        let tcb = &mut *(sp as *mut Self);
         // ensure we got a valid structure
         assert_eq!(
             tcb.canary, CANARY,
@@ -81,48 +85,6 @@ impl<F, T> State<F, T> {
         } else {
             None
         }
-    }
-}
-
-/// Saved registers of a thread.
-#[repr(C)]
-#[derive(Default, Debug)]
-struct ThreadContext {
-    rbx: usize,
-    rbp: usize,
-    r12: usize,
-    r13: usize,
-    r14: usize,
-    r15: usize,
-    rip: usize,
-}
-
-impl ThreadContext {
-    /// Switch context to another thread.
-    #[naked]
-    #[inline(never)]
-    unsafe extern "sysv64" fn switch(_ptr_ptr: *mut *mut Self) {
-        asm!(r#"
-        // push rip (by caller)
-        push r15
-        push r14
-        push r13
-        push r12
-        push rbp
-        push rbx
-
-        mov rax, [rdi]
-        mov [rdi], rsp
-        mov rsp, rax
-
-        pop rbx
-        pop rbp
-        pop r12
-        pop r13
-        pop r14
-        pop r15
-        // pop rip (by ret)
-        "# :::: "volatile" "intel" "alignstack");
     }
 }
 
@@ -162,7 +124,7 @@ where
             // fill SP and PC at first run
             if let State::Ready(_) = &raw.tcb.state {
                 let context = ((raw as *mut Self).add(1) as *mut ThreadContext).sub(1);
-                (*context).rip = entry::<F, T> as usize;
+                (*context).set_pc(entry::<F, T> as usize);
                 raw.tcb.context_ptr = context;
                 raw.tcb.waker = Some(cx.waker().clone());
             }
@@ -182,7 +144,7 @@ where
 }
 
 /// A static function as the entry of new thread
-unsafe extern "sysv64" fn entry<F, T>()
+unsafe extern "C" fn entry<F, T>()
 where
     F: Send + 'static + FnOnce() -> T,
     T: Send + 'static,
